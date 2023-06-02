@@ -1,0 +1,6 @@
+d0 TOOR
+	p0 2 AA2:650 AA3:750
+	p5 1 AA5:1000
+
+d1 AAAA
+
