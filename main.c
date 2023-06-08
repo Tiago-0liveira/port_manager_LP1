@@ -5,7 +5,7 @@
 #include <limits.h>
 
 #define CONTENTOR_MIN_WEIGHT 500
-#define MAX_BUFFER_LENGTH 255
+#define MAX_BUFFER_LENGTH 10
 #define ERROR_FNF "ERROR: could not open file\n"
 #define ERROR_FFE "ERROR: file format is not recognized\n"
 #define MENU "+---- MENU\n| move [-g grua] [-d ponto] [-p pilha] [-D ponto] [-P pilha] [-n numero_de_contentores]\n| show [-d ponto] [-e embarc]\n| where [embarc]\n| navigate [-e embarc] [-d ponto]\n| load [-e embarc] [-p pilha] [-c contentor:peso]\n| weight [embarc]\n| save [filename]\n| help \n| quit \n+----\n"
@@ -75,10 +75,63 @@ typedef struct _command
 {
 	char *name;
 	int num_flags;
-	Flag flags[COMMAND_MAX_ARGS_NUM];
+	Flag *flags[COMMAND_MAX_ARGS_NUM];
 	int error;
     char *arg;
 } Command;
+
+void free_command(Command *command)
+{
+	int i;
+	for (i = 0; i < command->num_flags; i++)
+	{
+		//printf("i:%d|\n", i);
+		if (command->flags[i]->is_num)
+		{
+			free((int*)command->flags[i]->value);
+			//printf("freeing flag %d|%c|v:%d|\n", i, command->flags[i]->name, *(int*)command->flags[i]->value);
+		}
+		else
+		{
+			//printf("freeing flag %d|%c|v:%s|\n", i, command->flags[i]->name, command->flags[i]->value);
+			free((char*)command->flags[i]->value);
+		}
+	}
+	if (command->name == NULL) free(command->name);
+	if (command->arg == NULL) free(command->arg);
+	free(command);
+}
+
+void free_embarcacao(Embarcacao *embarcacao)
+{
+	int i;
+	for (i = 0; i < MAX_EMBARCACAO_PILHAS_CONTENTORES; i++)
+	{
+		stack_node *node;
+		node = embarcacao->pilhas_contentores[i]->topo;
+		while (node != NULL)
+		{
+			stack_node *tmp;
+			tmp = node;
+			node = node->next;
+			free(tmp->contentor);
+			free(tmp);
+		}
+		free(embarcacao->pilhas_contentores[i]);
+	}
+	free(embarcacao);
+}
+
+void free_estaleiro(Estaleiro *estaleiro)
+{
+	int i;
+	for (i = 0; i < MAX_EMBARCACOES_NUM; i++)
+	{
+		if (estaleiro->embarcacoes[i] != NULL)
+			free_embarcacao(estaleiro->embarcacoes[i]);
+	}
+	free(estaleiro);
+}
 
 int startsWith(const char *str, const char *pre)
 {
@@ -118,8 +171,8 @@ Flag *getFlag(Command *command, char flag_name)
     int i;
     for (i = 0; i < command->num_flags; i++)
     {
-        if (command->flags[i].name == flag_name)
-            return &command->flags[i];
+        if (command->flags[i]->name == flag_name)
+            return command->flags[i];
     }
     return NULL;
 }
@@ -130,7 +183,7 @@ int set_flag_value(Command *cmd, char flag_name, void *dest)
     for (i = 0; i < cmd->num_flags; i++)
     {
         Flag *flag;
-        flag = &cmd->flags[i];
+        flag = cmd->flags[i];
         if (flag->name == flag_name)
         {
             if (flag->is_num)
@@ -178,7 +231,7 @@ Contentor *parse_contentor(char *contentor_str)
     tmp3 = strchr(contentor_str, ':');
     if (tmp3 == NULL) return NULL;
     if ((tmp3 - (char *) contentor_str) != (CODIGO_CONTENTOR_SIZE - 1)) return NULL;
-    c = malloc(sizeof(Contentor));
+    c = (Contentor*) malloc(sizeof(Contentor));
     if (c == NULL) return NULL;
     if (sscanf(contentor_str, "%3s:%d", c->id, &c->peso) != 2 || c->peso < 0 || c->peso < CONTENTOR_MIN_WEIGHT || !valid_contentor_code(c->id)) return NULL;
     return c;
@@ -525,10 +578,13 @@ Command* command_from_str(char* raw_command)
                 flag->value = (void*)valuePtr;
             }
             else
-                flag->value = token;
+			{
+				flag->value = malloc(sizeof(char) * FLAG_VALUE_TMP_POINTER_SIZE);
+				strcpy(flag->value, token);
+			}
 
             command->num_flags++;
-            command->flags[command->num_flags-1] = *flag;
+            command->flags[command->num_flags-1] = flag;
             token = strtok(NULL, " ");
             continue;
         }
@@ -583,7 +639,6 @@ void move_contentores(Estaleiro *pEstaleiro, int grua_max_move, int emb_index_p,
         if (contentores == NULL) return;
         for (j = 0; j < grua_max_move && contentores[j] != NULL; j++) {
             empilhar(pEstaleiro->embarcacoes[emb_index_des]->pilhas_contentores[pile_index_des], contentores[j]);
-            free(contentores[j]);
         }
         free(contentores);
         num_contentores -= grua_max_move;
@@ -716,11 +771,14 @@ char *str_embarcacao_bonita(Embarcacao *emb, int emb_idx)
 void print_estaleiro_bonito(Estaleiro *pEstaleiro)
 {
     int i;
+	char *tmp_str
 
     printf("\n");
     for (i = 0; i < MAX_EMBARCACOES_NUM; i++)
     {
-        printf("%s", str_embarcacao_bonita(pEstaleiro->embarcacoes[i], i));
+		tmp_str = str_embarcacao_bonita(pEstaleiro->embarcacoes[i], i);
+        printf("%s", tmp_str);
+		free(tmp_str);
     }
     printf("\n");
 }
@@ -754,23 +812,25 @@ int get_index_by_embarcacao(Estaleiro *pEstaleiro, Embarcacao *emb)
 
 char **str_estaleiro(Estaleiro *pEstaleiro)
 {
-    char **str;
+    char **str, *emb;
     int i;
     str = malloc(sizeof(char*) * MAX_EMBARCACOES_NUM);
     for (i = 0; i < MAX_EMBARCACOES_NUM; i++)
     {
         if (embarcacao_is_null(pEstaleiro->embarcacoes[i])) {
             str[i] = (char *) malloc(sizeof(char) * 1);
-            strcpy(str[i], "");
+            str[i][0] = '\0';
             continue;
         }
         if (embarcacao_vazia(pEstaleiro->embarcacoes[i])) {
-            str[i] = (char *) malloc(sizeof(char) * (MATRICULA_SIZE - 1 + 3 + 1));
+            str[i] = (char *) malloc(sizeof(char) * (MATRICULA_SIZE - 1 + 3 + 2));
             sprintf(str[i], "d%d %s\n", i, pEstaleiro->embarcacoes[i]->matricula);
             continue;
         }
         str[i] = (char*)malloc(sizeof(char) * (get_embarcacao_str_size(pEstaleiro->embarcacoes[i]) + 1));
-        strcpy(str[i], str_embarcacao(pEstaleiro->embarcacoes[i], i));
+        emb = str_embarcacao(pEstaleiro->embarcacoes[i], i);
+		strcpy(str[i], emb);
+		free(emb);
     }
     return str;
 }
@@ -867,13 +927,18 @@ int executeCommand(Command *command, Estaleiro *estaleiro)
             int i;
             strs = str_estaleiro(estaleiro);
             for (i = 0; i < MAX_EMBARCACOES_NUM; i++) {
-                if (strs[i] != NULL && strlen(strs[i]) > 0)
-                    printf("%s", strs[i]);
+                if (strs[i][0] != '\0')
+				{
+					printf("%s", strs[i]);
+				}
+				free(strs[i]);
             }
+			free(strs);
 
 #endif
         } else {
             void *tmp;
+			char *tmp_str;
             Embarcacao *emb;
             int emb_idx;
             tmp = malloc(FLAG_VALUE_TMP_POINTER_SIZE);
@@ -884,10 +949,12 @@ int executeCommand(Command *command, Estaleiro *estaleiro)
                 emb_idx = get_index_by_embarcacao(estaleiro, emb);
                 if (embarcacao_is_null(emb)) return 0;
 #ifdef ESTALEIRO_BONITO
-                printf("%s", str_embarcacao_bonita(emb, emb_idx));
+				tmp_str = str_embarcacao_bonita(emb, emb_idx);
 #else
-                printf("%s", str_embarcacao(emb, emb_idx));
+                tmp_str = str_embarcacao(emb, emb_idx);
 #endif
+                printf("%s", tmp_str);
+				free(tmp_str);
             }
             else if (set_flag_value(command, 'd', tmp))
             {
@@ -900,10 +967,12 @@ int executeCommand(Command *command, Estaleiro *estaleiro)
                 {
                     emb_idx = get_index_by_embarcacao(estaleiro, emb);
 #ifdef ESTALEIRO_BONITO
-                    printf("%s", str_embarcacao_bonita(estaleiro->embarcacoes[*(int *) tmp], emb_idx));
+					tmp_str = str_embarcacao_bonita(estaleiro->embarcacoes[*(int *) tmp], emb_idx);
 #else
-                    printf("%s", str_embarcacao(estaleiro->embarcacoes[*(int *) tmp], emb_idx));
+					tmp_str = str_embarcacao(estaleiro->embarcacoes[*(int *) tmp], emb_idx);
 #endif
+                    printf("%s", tmp_str);
+					free(tmp_str);
                 }
             }
         }
@@ -921,8 +990,9 @@ int executeCommand(Command *command, Estaleiro *estaleiro)
     else if (strcmp(command->name, "navigate") == 0) {
         Embarcacao *emb;
         char *matricula;
-        int *emb_idx;
-        matricula = getFlag(command, 'e')->value;
+        int emb_idx;
+		matricula = malloc(sizeof(char) * MATRICULA_SIZE);
+        set_flag_value(command, 'e', matricula);
         emb = get_embarcacao_by_name(estaleiro, matricula);
         if (emb == NULL) {
             emb = cria_embarcacao();
@@ -930,11 +1000,10 @@ int executeCommand(Command *command, Estaleiro *estaleiro)
         } else {
             estaleiro->embarcacoes[get_index_by_embarcacao(estaleiro, emb)] = cria_embarcacao();
         }
-        emb_idx = malloc(sizeof(int));
-        if (set_flag_value(command, 'd', emb_idx) != 1 || !embarcacao_is_null(estaleiro->embarcacoes[*emb_idx]))
+        if (set_flag_value(command, 'd', &emb_idx) != 1 || !embarcacao_is_null(estaleiro->embarcacoes[emb_idx]))
             return 0;
-        estaleiro->embarcacoes[*emb_idx] = emb;
-        printf("%s", COMMAND_SUCCESS);
+        estaleiro->embarcacoes[emb_idx] = emb;
+        printf("%s", COMMAND_SUCCESS);	
         return 1;
     }
     else if (strcmp(command->name, "load") == 0) {
@@ -953,6 +1022,7 @@ int executeCommand(Command *command, Estaleiro *estaleiro)
         c = parse_contentor(tmp);
         if (tmp == NULL || pile_idx == NULL || c == NULL || contentor_id_exists_in_estaleiro(estaleiro, c->id)) return 0;
         empilhar(estaleiro->embarcacoes[emb_idx]->pilhas_contentores[*pile_idx], c);
+		//printf("str_contentor:%s|\n", str_contentor(estaleiro->embarcacoes[emb_idx]->pilhas_contentores[*pile_idx]->topo->contentor));
         printf("%s", COMMAND_SUCCESS);
         return 1;
     }
@@ -967,11 +1037,13 @@ int executeCommand(Command *command, Estaleiro *estaleiro)
         stream = str_estaleiro(estaleiro);
         for (i = 0; i < MAX_EMBARCACOES_NUM; i++)
         {
-            if (strcmp(stream[i], "") != 0) {
+            if (stream[i][0] != '\0') {
                 fprintf(fp, "%s", stream[i]);
             }
+			free(stream[i]);
         }
         fclose(fp);
+		free(stream);
         printf("%s", COMMAND_SUCCESS);
     }
     else if (strcmp(command->name, "help") == 0 /*|| strcmp(command->name, "quit") == 0*/) {
@@ -980,7 +1052,109 @@ int executeCommand(Command *command, Estaleiro *estaleiro)
     return 1;
 }
 
+//reads fp until finds c or max_len chars is reached, if str is NULL will not store the read chars
+//returns the last char read
+char read_until(FILE *fp, char *str, char c, int max_len)
+{
+	char ch;
+	int i;
+	i = 0;
+	if (str != NULL && max_len <= 0)
+		max_len = INT_MAX;
+	while ((ch = fgetc(fp)) != EOF && ch != c && i < max_len - 1)
+	{
+		if (str != NULL)
+			str[i] = ch;
+		i++;
+	}
+	if (str != NULL)
+		str[i] = '\0';
+	return ch;
+}
+
+int read_int(FILE *fp, char *c)
+{
+	int r;
+	char ch;
+
+	r = 0;
+
+	while (isdigit((ch = getc(fp))) &&  ch != EOF)
+	{
+		r = r * 10 + (ch - '0');
+	}
+	if (c != NULL)
+		*c = ch;
+	return r;
+}
+
+
 void	read_config_file(char *filename, Estaleiro *estaleiro)
+{
+	FILE *fp;
+	char read_chars[10];
+	int embarcacao_index;
+
+	fp = fopen(filename, "r");
+	if (fp == NULL)
+	{
+		printf(ERROR_FNF);
+		exit(1);
+	}
+	
+	while (fgets(read_chars, 2, fp))
+	{	
+		if (startsWith(read_chars, "d"))
+		{
+			embarcacao_index = read_int(fp, NULL);
+			if (embarcacao_index >= MAX_EMBARCACOES_NUM)
+			{
+				printf(ERROR_FFE);
+				exit(1);
+			}
+			read_until(fp, read_chars, '\n', MATRICULA_SIZE+1);
+			if (!valid_matricula(read_chars))
+			{
+				printf(ERROR_FFE);
+				exit(1);
+			}
+			strcpy(estaleiro->embarcacoes[embarcacao_index]->matricula, read_chars);
+		} else if (startsWith(read_chars, "\t"))
+		{
+			int pile_index;
+			int num_contentores;
+			read_until(fp, NULL, ' ', 1);
+			pile_index = read_int(fp, NULL);
+			num_contentores = read_int(fp, NULL);
+			if (pile_index >= MAX_EMBARCACAO_PILHAS_CONTENTORES)
+			{
+				printf(ERROR_FFE);
+				exit(1);
+			}
+			for (;num_contentores > 0; num_contentores--)
+			{
+				Contentor *c;
+				char code[5], ch;
+				int peso;
+				read_until(fp, code, ':', 5);
+				peso = read_int(fp, &ch);
+				//printf("code:%s|peso:%d|ch:%c|\n", code, peso, ch);
+				if (!valid_contentor_code(code) || contentor_id_exists_in_estaleiro(estaleiro, code) || peso < 500)
+				{
+					printf(ERROR_FFE);
+					exit(1);
+				}
+				c = malloc(sizeof(Contentor));
+				strcpy(c->id, code);
+				c->peso = peso;
+				empilhar(estaleiro->embarcacoes[embarcacao_index]->pilhas_contentores[pile_index], c);
+			}
+		}
+	}
+	fclose(fp);
+}
+//antiga
+/*void	read_config_file(char *filename, Estaleiro *estaleiro)
 {
 	FILE *fp;
 	char line[MAX_BUFFER_LENGTH];
@@ -1013,7 +1187,7 @@ void	read_config_file(char *filename, Estaleiro *estaleiro)
             int contentorCount, pile_index, sscanf_r;
             char *contentorString;
 
-            contentorString = (char *) malloc(sizeof(char) * 100);
+            contentorString = (char *) malloc(sizeof(char) * MAX_BUFFER_LENGTH);
             if (contentorString == NULL)
                 break;
             sscanf_r = sscanf(line, "%*[^p]p%d %d %[^\n]", &pile_index, &contentorCount, contentorString);
@@ -1025,7 +1199,7 @@ void	read_config_file(char *filename, Estaleiro *estaleiro)
             token = strtok(contentorString, " ");
             i = 0;
             while (token != NULL && i < contentorCount) {
-                Contentor *contentor/* = (Contentor*)malloc(sizeof(Contentor))*/;
+                Contentor *contentor;
                 contentor = parse_contentor(token);
                 token = strtok(NULL, " ");
                 if (contentor == NULL) {
@@ -1040,7 +1214,7 @@ void	read_config_file(char *filename, Estaleiro *estaleiro)
 		}
 	}
 	fclose(fp);
-}
+}*/
 
 Estaleiro *cria_estaleiro(void)
 {
@@ -1080,10 +1254,9 @@ int main(int argc, char *argv[])
 		if (cmd->error == 1){
 			printf(COMMAND_INVALID);
             print_menu = 0;
-			continue;
 		} else if (strcmp(cmd->name, "quit") == 0) {
-			free(estaleiro);
-			free(cmd);
+			free_estaleiro(estaleiro);
+			free_command(cmd);
             return 0;
 		} else if (isValidCommand(cmd)) {
             int res;
@@ -1099,7 +1272,7 @@ int main(int argc, char *argv[])
             printf(COMMAND_INVALID);
             print_menu = 0;
         }
-        if (cmd != NULL) free(cmd);
+        free_command(cmd);
 	}
     return 0;
 }
